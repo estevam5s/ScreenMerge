@@ -50,6 +50,13 @@ enum BD {
     }
 
     static func createMergedScreen() async {
+        // Clean up any leftover virtual screens first
+        for _ in 0..<5 {
+            let result = await exec("discard", "-name=ScreenMerge")
+            if result.lowercased().contains("fail") || result.isEmpty { break }
+        }
+        try? await Task.sleep(for: .seconds(0.5))
+
         await exec("create",
              "-type=VirtualScreen",
              "-virtualScreenName=ScreenMerge",
@@ -324,6 +331,12 @@ class MergeController: ObservableObject {
             return
         }
 
+        status = "Movendo janelas..."
+
+        // Move all windows from physical monitors to the virtual display
+        moveWindowsToVirtual()
+        try? await Task.sleep(for: .seconds(0.5))
+
         status = "Capturando..."
 
         // Create overlay windows on physical monitors
@@ -375,6 +388,10 @@ class MergeController: ObservableObject {
         await capture.stop()
         cleanupOverlays()
 
+        // Move windows back from virtual display to physical monitors BEFORE discarding
+        moveWindowsBack()
+        try? await Task.sleep(for: .seconds(0.5))
+
         // Move cursor back to a physical monitor
         let mainBounds = CGDisplayBounds(CGMainDisplayID())
         CGWarpMouseCursorPosition(CGPoint(x: mainBounds.midX, y: mainBounds.midY))
@@ -383,6 +400,7 @@ class MergeController: ObservableObject {
         await BD.discard()
 
         virtualDisplayID = 0
+        virtualBounds = .zero
         status = "Desativado"
     }
 
@@ -401,6 +419,72 @@ class MergeController: ObservableObject {
     private func cleanupOverlays() {
         leftWin?.close(); leftWin = nil
         rightWin?.close(); rightWin = nil
+    }
+
+    private func moveWindowsToVirtual() {
+        let leftBounds = CGDisplayBounds(physicalLeftID)
+        let rightBounds = CGDisplayBounds(physicalRightID)
+        let physMinX = Int(min(leftBounds.minX, rightBounds.minX))
+        let physMaxX = Int(max(leftBounds.maxX, rightBounds.maxX))
+        let physMinY = Int(min(leftBounds.minY, rightBounds.minY))
+        let physMaxY = Int(max(leftBounds.maxY, rightBounds.maxY))
+        let offsetX = Int(virtualBounds.minX) - physMinX
+        let offsetY = Int(virtualBounds.minY) - physMinY
+
+        print("[ScreenMerge] Moving windows: physX=\(physMinX)..\(physMaxX) offset=(\(offsetX),\(offsetY))")
+
+        let script = NSAppleScript(source: """
+            tell application "System Events"
+                repeat with proc in (every process whose visible is true)
+                    try
+                        repeat with win in (every window of proc)
+                            set {x, y} to position of win
+                            if x >= \(physMinX) and x < \(physMaxX) and y >= \(physMinY) and y < \(physMaxY) then
+                                set position of win to {x + \(offsetX), y + \(offsetY)}
+                            end if
+                        end repeat
+                    end try
+                end repeat
+            end tell
+        """)
+        var err: NSDictionary?
+        script?.executeAndReturnError(&err)
+        if let err { print("[ScreenMerge] AppleScript move error: \(err)") }
+    }
+
+    private func moveWindowsBack() {
+        guard !virtualBounds.isEmpty else { return }
+
+        let leftBounds = CGDisplayBounds(physicalLeftID)
+        let rightBounds = CGDisplayBounds(physicalRightID)
+        let physMinX = Int(min(leftBounds.minX, rightBounds.minX))
+        let physMinY = Int(min(leftBounds.minY, rightBounds.minY))
+        let vMinX = Int(virtualBounds.minX)
+        let vMaxX = Int(virtualBounds.maxX)
+        let vMinY = Int(virtualBounds.minY)
+        let vMaxY = Int(virtualBounds.maxY)
+        let offsetX = physMinX - vMinX
+        let offsetY = physMinY - vMinY
+
+        print("[ScreenMerge] Moving windows back: virtualX=\(vMinX)..\(vMaxX) offset=(\(offsetX),\(offsetY))")
+
+        let script = NSAppleScript(source: """
+            tell application "System Events"
+                repeat with proc in (every process whose visible is true)
+                    try
+                        repeat with win in (every window of proc)
+                            set {x, y} to position of win
+                            if x >= \(vMinX) and x < \(vMaxX) and y >= \(vMinY) and y < \(vMaxY) then
+                                set position of win to {x + \(offsetX), y + \(offsetY)}
+                            end if
+                        end repeat
+                    end try
+                end repeat
+            end tell
+        """)
+        var err: NSDictionary?
+        script?.executeAndReturnError(&err)
+        if let err { print("[ScreenMerge] AppleScript move-back error: \(err)") }
     }
 
     // MARK: Event Tap
