@@ -172,10 +172,8 @@ class Capture: NSObject, SCStreamOutput, SCStreamDelegate {
     private var loggedSize = false
 
     func start(displayID: CGDirectDisplayID, width: Int, height: Int) async throws {
-        // Silent check — never triggers a dialog
         guard CGPreflightScreenCaptureAccess() else {
-            print("[ScreenMerge] Screen Recording not granted — requesting once")
-            CGRequestScreenCaptureAccess()
+            print("[ScreenMerge] Screen Recording not granted")
             throw MergeError.screenRecordingDenied
         }
 
@@ -376,6 +374,9 @@ class MergeController: ObservableObject {
         CGWarpMouseCursorPosition(center)
         CGAssociateMouseAndMouseCursorPosition(1)
 
+        // Give focus back to the frontmost app (not ScreenMerge)
+        activateFrontApp()
+
         active = true
         status = "Merge ativo — \(vw)x\(vh)"
     }
@@ -450,6 +451,44 @@ class MergeController: ObservableObject {
         var err: NSDictionary?
         script?.executeAndReturnError(&err)
         if let err { print("[ScreenMerge] AppleScript move error: \(err)") }
+
+        // Maximize the frontmost window to fill the virtual display
+        let vx = Int(virtualBounds.origin.x)
+        let vy = Int(virtualBounds.origin.y)
+        let vw = Int(virtualBounds.width)
+        let vh = Int(virtualBounds.height)
+        let maxScript = NSAppleScript(source: """
+            tell application "System Events"
+                set frontApp to first process whose frontmost is true
+                try
+                    set position of window 1 of frontApp to {\(vx), \(vy)}
+                    set size of window 1 of frontApp to {\(vw), \(vh)}
+                end try
+            end tell
+        """)
+        var maxErr: NSDictionary?
+        maxScript?.executeAndReturnError(&maxErr)
+    }
+
+    private func activateFrontApp() {
+        let script = NSAppleScript(source: """
+            tell application "System Events"
+                set frontApp to first process whose frontmost is true
+                if name of frontApp is not "ScreenMerge" then
+                    set frontmost of frontApp to true
+                else
+                    -- Find another visible app to activate
+                    repeat with proc in (every process whose visible is true)
+                        if name of proc is not "ScreenMerge" then
+                            set frontmost of proc to true
+                            exit repeat
+                        end if
+                    end repeat
+                end if
+            end tell
+        """)
+        var err: NSDictionary?
+        script?.executeAndReturnError(&err)
     }
 
     private func moveWindowsBack() {
